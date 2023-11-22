@@ -1,0 +1,671 @@
+---
+title: "final_project_nw323"
+output: html_document
+date: "2023-04-30"
+---
+#key slide: slide20
+### to-do list
+
+
+# Data Overview
+read in data files, check values and vovert to desired format
+note: data quality check steps were quoted after examine as the output is very long
+
+## read the SNP and gene information 
+```{r}
+library(ggplot2)
+SNP_info <- read.csv("SNP_info.csv", 
+                     header = TRUE, 
+                     stringsAsFactors = FALSE,
+                      colClasses = "character")
+gene_info <- read.csv("gene_info.csv", 
+                     header = TRUE, 
+                     stringsAsFactors = FALSE,
+                colClasses = "character")
+```
+
+## read the phenotype data and look at the structure
+The phenotype data is the mRNA gene expression of lympoblastoid cell lines (LCL). There are five genes expression profiles. It's microarray data that has been normalized and standardized. From the gene_info we learnt that the genes are from 5 chromosomes 
+```{r}
+# read the phenotype data
+pheno <- read.csv("phenotypes.csv", 
+                      header = TRUE, 
+                      stringsAsFactors = FALSE,
+                      row.names = 1)
+
+# visulize the phenotype data
+#png("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/histogram_phetotype.png",width = 400, height = 300)
+par(mfrow = c(5, 1),mar = c(2, 2, 2, 2))
+for (col in names(pheno)) {
+  hist(pheno[[col]], main = paste("histogram of", col, sep = " "))
+}
+#dev.off()
+```
+
+## read the covariates data and look at the structure
+The covariaes includes population origin and gender information for the 344 samples.
+```{r}
+covars <- read.csv("covars.csv", 
+                      header = TRUE, 
+                      stringsAsFactors = FALSE,
+                      row.names = 1, colClasses = "character")
+
+# Check the covariates groups
+table(covars)
+```
+
+### convert the covariates to binary variables 
+```{r}
+library(varhandle)
+# convert categorical variables to binary variables
+Population_binary <- to.dummy(covars$Population,"population")
+Gender_binary <- to.dummy(covars$Sex,"gender")
+```
+
+## read the genotype data and look at the structure
+genotypes dara: each row is a sample (an individual), each column is an SNP. The samples came from 4 Eurppean populations (CEU, FIN, GBR, TSI) and gender is also covariates. From the SNP_info we learnt that the SNPs are from 22 chromosomes 
+The "0" and "2" are homozygotes and the "1" is a heterozygote.
+The MAF for each SNP can be calculated: add up all the numbers and divide by 2n then take the smaller of that value or 1 - that value!
+```{r}
+# read the genotype data
+geno <- read.csv("genotypes.csv", 
+                      header = TRUE, 
+                      stringsAsFactors = FALSE,
+                      row.names = 1)
+```
+
+### check genotype data #quoted after checking as the output is very long.
+```{r}
+# Remove samples with >10% missing data across all genotypes
+missing_SNP_pct <- apply(is.na(geno), 1, mean) * 100
+pheno <- pheno[missing_SNP_pct <= 10,]
+geno <- geno[missing_SNP_pct <= 10,]
+covars <- covars[missing_SNP_pct <= 10,]
+geno <- geno[, apply(is.na(geno), 2, mean) * 100 <= 5]
+
+```
+
+## Filter the genotype data by maf and covert it to proper Xa and Xd coder
+filter the genotype data by a MAF limit = 0.05
+```{r}
+genotype_coder <- function(geno_import, maf_limit=0.05, error_value = 5){
+# Inputs: geno_col is the vector of alleles from the last line
+  xa_converter <- function(geno_col, maf_limit){
+    geno_count <- table(geno_col) 
+    # Create a vector of error values the size of our genetic vector
+    return_coding=rep(error_value,length(geno_col))
+    # If the SNP only have one genotype, remove it from analysis
+    if(length(geno_count) == 1){
+      return(return_coding)
+    } else {
+      if ("0" %in% geno_col) {
+        num_zero = as.matrix(geno_count)["0",]
+      } else {num_zero = 0 }
+      if ("1" %in% geno_col) {
+        num_one = as.matrix(geno_count)["1",]
+      } else {num_one = 0 }
+      if ("2" %in% geno_col) {
+        num_two = as.matrix(geno_count)["2",]
+      } else {num_two = 0 }
+    }
+    # claculate the allel frequency (denote the allels as A1 and A2)
+    A1 = 2*num_zero + num_one
+    A2 = 2*num_two + num_one
+    # calculate the maf
+    maf <- min(c(A1,A2))/(A1+A2)
+    if(maf < maf_limit){
+      # If maf is less than our threshold don't calculate and leave it as 5
+      return(return_coding)
+      } else {
+        xa <- geno_col-1
+        return(xa)
+        } 
+}   
+  
+  # Take our input, apply our new xa_converter function to the input by column (2), with numSamples=nrow(data), and maf_limit=0,05
+  xa_mat  <- as.matrix(apply(geno_import, 2, xa_converter,maf_limit))
+  # Filter out any columns that have the set error value 5 
+    # (None of our real genotypes should have a value 5 so all these didn't pass our multiallelic or MAF filtering)
+  xa_mat <- xa_mat[,xa_mat[1,]!=error_value]
+  # To get our Xd dominance dummy variable coding use the algebra below.
+  xd_mat <- 1 - 2*abs(xa_mat)
+  
+  # Return both the Xa and Xd dummy variable coding for our input matrix/data
+  return(list(xa_mat,xd_mat))
+}
+# Convert alleles to dummy variable coding and save in a list
+codes <- genotype_coder(geno)
+# Get each specific coding from the list
+xa_mat <- codes[[1]]
+xd_mat <- codes[[2]]
+
+# double check the genotype_coder - quoted after check to speed up the analysis
+# apply(xa_mat,1, function(x) print(table(x))) 
+
+rm(codes)
+```
+
+
+Ok, now we have checked and cleaned the dataset. Let's use PCA to check for clustering of n individuals (population structure!) or outliers and get the PCs that captures the mojority of the variance
+
+# PCA analysis
+
+## PCA on Xa
+
+### perform PCA on Xa
+```{r}
+
+# PCA analysis on the Xa matrix
+pca.result.Xa <- prcomp(xa_mat%*%t(xa_mat)) 
+pcaDf_Xa <- data.frame(pc1=pca.result.Xa$x[,1], pc2=pca.result.Xa$x[,2], pc3 = pca.result.Xa$x[,3])
+```
+
+### plot PCA on Xa
+```{r}
+library(ggplot2)
+library(grid)
+library(gridExtra)
+pcaDf <- data.frame(pc1=pca.result.Xa$x[,1], pc2=pca.result.Xa$x[,2], pc3=pca.result.Xa$x[,3], population=covars$Population, gender=covars$Sex)
+
+p1 <- ggplot(pcaDf,aes(pc1,pc2)) +
+  geom_point(aes(color=population))
+p2 <- ggplot(pcaDf,aes(pc1,pc3)) +
+  geom_point(aes(color=population))
+p3 <- ggplot(pcaDf,aes(pc3,pc2)) +
+  geom_point(aes(color=population))
+png("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/Population_structure_Xa.png",width = 400, height = 300)
+grid.arrange(p1,p3,p2,ncol=2,top=textGrob("Population structure on Xa"))
+dev.off()
+
+
+
+p4 <- ggplot(pcaDf,aes(pc1,pc2)) +
+  geom_point(aes(color=gender))
+p5 <- ggplot(pcaDf,aes(pc1,pc3)) +
+  geom_point(aes(color=gender))
+p6 <- ggplot(pcaDf,aes(pc3,pc2)) +
+  geom_point(aes(color=gender))
+png("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/Gender_structure_Xa.png",width = 400, height = 300)
+grid.arrange(p4,p6,p5,ncol=2,top=textGrob("Gender structure on Xa"))
+dev.off()
+
+
+#conclusion: there is population structure but not gender structure. So only include the population structure in the model
+```
+
+## PCA on Xd
+
+### perform and plot PCA on Xd
+```{r}
+
+# PCA analysis on the Xd matrix
+pca.result.Xd <- prcomp(xd_mat%*%t(xd_mat)) 
+pcaDf_Xd <- data.frame(pc1=pca.result.Xd$x[,1], pc2=pca.result.Xd$x[,2], pc3 = pca.result.Xd$x[,3])
+
+
+### plot PCA on Xd
+library(ggplot2)
+library(grid)
+library(gridExtra)
+pcaDf <- data.frame(pc1=pca.result.Xd$x[,1], pc2=pca.result.Xd$x[,2], pc3=pca.result.Xd$x[,3], population=covars$Population, gender=covars$Sex)
+
+p1 <- ggplot(pcaDf,aes(pc1,pc2)) +
+  geom_point(aes(color=population))
+p2 <- ggplot(pcaDf,aes(pc1,pc3)) +
+  geom_point(aes(color=population))
+p3 <- ggplot(pcaDf,aes(pc3,pc2)) +
+  geom_point(aes(color=population))
+png("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/Population_structure_Xd.png",width = 400, height = 300)
+grid.arrange(p1,p3,p2,ncol=2,top=textGrob("Population structure on Xd"))
+dev.off()
+
+
+
+p4 <- ggplot(pcaDf,aes(pc1,pc2)) +
+  geom_point(aes(color=gender))
+p5 <- ggplot(pcaDf,aes(pc1,pc3)) +
+  geom_point(aes(color=gender))
+p6 <- ggplot(pcaDf,aes(pc3,pc2)) +
+  geom_point(aes(color=gender))
+png("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/Gender_structure_Xd.png",width = 400, height = 300)
+grid.arrange(p4,p6,p5,ncol=2,top=textGrob("Gender structure on Xd"))
+dev.off()
+
+
+#conclusion: there is population structure but not gender structure. So only include the population structure in the model
+```
+## make Covarates matrix basing on the top PCs
+```{r}
+pc_df <- as.matrix(cbind(pcaDf_Xa, pcaDf_Xd))
+```
+
+# MLE and p-value
+
+## define p-value calculator function
+pval_calculator takes in one phenotype, one SNP (coded by additive or dominant), and (potentially multiple) covariate(s).
+```{r}
+library(MASS)
+pval_calculator <- function(pheno_input, xa_input, xd_input, xz_input = NULL){
+  n_samples <- nrow(pheno_input)
+    
+    X_mx <- cbind(1,xa_input,xd_input, xz_input)
+    # Estimate the beta values under H1
+    MLE_beta <- ginv(t(X_mx) %*% X_mx) %*% t(X_mx) %*% pheno_input
+    #calculate y_hat under H1
+    y_hat_1 <- X_mx %*% MLE_beta
+    
+    # Combine the data for the beta estimates (H0)
+    x_h0 =  cbind(rep(1,length(xa_input)), xz_input)
+    # Estimate the beta values under H0
+    MLE_h0 = ginv(t(x_h0) %*% x_h0) %*% t(x_h0) %*% pheno_input 
+    #calculate y_hat under H0
+    y_hat_0 = x_h0 %*% MLE_h0
+    
+    SSE_theta_0 = sum((pheno_input-y_hat_0)^2) #calculate SSE under null 
+    SSE_theta_1 = sum((pheno_input-y_hat_1)^2) #calculate SSE under H1
+    
+    
+      df_M <- 2
+  #df_E <- n_samples - 4 
+      df_E <- n_samples - ncol(X_mx)
+  
+  numerator <- (SSE_theta_0-SSE_theta_1) / df_M #calculate your F statistic
+  denom <- SSE_theta_1 / df_E
+  Fstatistic <-numerator / denom
+  
+  # to check if it is correct 
+  pval <- pf(Fstatistic, df_M, df_E,lower.tail = FALSE) #calculate your p value and return it
+  return(pval)
+}
+```
+
+## filter significant p-value for each gene
+
+### erap2 - get the p-value lists
+```{r}
+gene_name <- "erap2"
+gene_probe <- "ENSG00000164308.12"
+# Run this function across the loci in our genotype data
+all_binary <- cbind(Population_binary,Gender_binary)
+
+pval_ls_covar_pc <- rep(0,ncol(xa_mat))
+pval_ls_covar_pop <- rep(0,ncol(xa_mat))
+pval_ls_covar_gd <- rep(0,ncol(xa_mat))
+pval_ls <- rep(0,ncol(xa_mat))
+MLE_ls <- rep(0,ncol(xa_mat))
+for(i in 1:ncol(xa_mat)){
+  #pc_output = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i],pc_df)
+  pval_ls_covar_gd[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i], Gender_binary)
+  pval_ls_covar_pop[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i],Population_binary)
+  pval_ls_covar_pc[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i],pc_df)
+  #MLE_ls[i] <- pc_output[1]
+  pval_ls[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i])
+}
+```
+### erap2 - Produce a QQ plot to test models
+```{r}
+observed_pvals = sort(unlist(pval_ls))
+observed_pvals_covar_pc = sort(unlist(pval_ls_covar_pc))
+observed_pvals_covar_pop = sort(unlist(pval_ls_covar_pop))
+observed_pvals_covar_gd = sort(unlist(pval_ls_covar_gd))
+expected_pvals = qunif(seq(0, 1, length.out = length(observed_pvals) + 2), min = 0, max = 1)  ## Generate expected values. Note that we are using length+2
+expected_pvals = expected_pvals[expected_pvals != 0 & expected_pvals != 1]  ## Remove the two extra values since they are 0 and 1
+df1 = data.frame(observed = -log10(observed_pvals), expected = -log10(expected_pvals))
+df2 = data.frame(observed = -log10(observed_pvals_covar_pc), expected = -log10(expected_pvals))
+df3 = data.frame(observed = -log10(observed_pvals_covar_pop), expected = -log10(expected_pvals))
+df4 = data.frame(observed = -log10(observed_pvals_covar_gd), expected = -log10(expected_pvals))
+df1$group <- "Without_covariates"
+df2$group <- "With_covariates_PCs"
+df3$group <- "With_covariates_Population"
+df4$group <- "With_covariates_Gender"
+p_df <- rbind(df1,df2,df3,df4)
+
+png(paste("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/QQplot_test_model",gene_name,".png",sep = ""),width = 400, height = 300)
+ggplot(p_df, aes(x = expected, y = observed, color=group)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  theme(legend.position = c(0.2,0.8))+
+  labs(x = '-log10 Expected p-val',
+       y = '-log10 Observed p-val',
+       title = paste('GWAS QQ plot on gene ', gene_name, ' with different covars',sep=""))
+dev.off()
+rm(observed_pvals)
+rm(observed_pvals_covar_pop)
+rm(observed_pvals_covar_gd)
+```
+
+### erap2 - Produce a QQ plot, Manhattan plot, and filter the significant genes using pc-model
+```{r}
+observed_pvals_covar_pc = sort(unlist(pval_ls_covar_pc))
+expected_pvals = qunif(seq(0, 1, length.out = length(observed_pvals_covar_pc) + 2), min = 0, max = 1)  ## Generate expected values. Note that we are using length+2
+expected_pvals = expected_pvals[expected_pvals != 0 & expected_pvals != 1]  ## Remove the two extra values since they are 0 and 1
+df = data.frame(observed = -log10(observed_pvals_covar_pc), expected = -log10(expected_pvals)) 
+qq<- ggplot(df, aes(x = expected, y = observed)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  theme(legend.position = c(0.2,0.8))+
+  labs(x = '-log10 Expected p-val',
+       y = '-log10 Observed p-val',
+       title = paste('GWAS QQ plot on gene ', gene_name, ' with and without covars',sep=""))
+
+### Produce a Manhattan plot for gene ENSG00000164308.12 and Report significant SNPs
+# Make a simple manhattan plot
+plot_df <- data.frame(index = 1:length(pval_ls_covar_pc), pval = unlist(pval_ls_covar_pc), SNPname = colnames(xa_mat))
+man <- ggplot(plot_df, aes(index, -log10(pval))) + geom_point() + ggtitle(paste("Manhattan plot for gene ", gene_name,sep = "")) + geom_hline(yintercept=-log10(0.05 /length(pval_ls_covar_pc)), color = "red")
+
+png(paste("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/QQ_Manh_",gene_name,".png",sep = ""),width = 800, height = 300)
+grid.arrange(qq,man,ncol=2)
+dev.off()
+
+
+### Report significant SNPs
+alpha = 0.05
+alpha_b = alpha / length(pval_ls_covar_pc)
+pass_bfr = plot_df[which(plot_df$pval<alpha_b),]
+pass_bfr[,"SNPname"]
+print(paste("the number of SNPs that find to be significant correlated with the target gene when controlling the study-wide type 1 error of 0.05 using a Bonferroni correction is ",nrow(pass_bfr) )) 
+
+### match significant SNP location (with ENSG00000164308.12) information and report
+
+sig_snp_info_erap2 <- merge(pass_bfr,SNP_info,by.x = "SNPname", by.y = "id", all.x = TRUE)
+sig_snp_info_gene_erap2  <- sig_snp_info_erap2[which(sig_snp_info_erap2$position>=gene_info[which(gene_info$probe==gene_probe),"start"] & sig_snp_info_erap2$position<=gene_info[which(gene_info$probe==gene_probe),"end"]),]
+nrow(sig_snp_info_gene_erap2)
+rm(pval_ls_covar_pc)
+```
+### erap2 - further analysis on the impact of SNPs to the phenotype
+For each identified SNPs, how  the expression level of minor allel different from the mojor allel?
+```{r}
+library(ggpubr)
+erap2_pheno <- pheno[,"ENSG00000164308.12"]
+
+SNP_erap2_Xa <- as.data.frame(xa_mat[,pass_bfr[,"SNPname"]])
+SNP_erap2_Xd <- as.data.frame(xd_mat[,pass_bfr[,"SNPname"]])
+
+for (i in 1:ncol(SNP_erap2_Xa)) {
+  test <- data.frame(erap2_pheno, SNP_erap2_Xa[i],SNP_erap2_Xd[i])
+colnames(test) <- c("pheno","Xa","Xd")
+test[,2] <- as.factor(test[,2] )
+test[,3] <- as.factor(test[,3] )
+my_comparisons <- list( c("-1","1"),c("0","1"), c("0","-1"))
+plot_xa <- ggplot(test, aes(y=erap2_pheno, x=Xa)) + 
+  stat_compare_means(comparisons = my_comparisons) + 
+  xlab(NULL) +
+    geom_boxplot()
+
+my_comparisons <- list( c("-1","1"))
+plot_xd <- ggplot(test, aes(y=erap2_pheno, x=Xd)) + 
+  stat_compare_means(comparisons = my_comparisons) + 
+  xlab(NULL) +
+    geom_boxplot()
+
+grid.arrange(plot_xa,plot_xd,ncol=2, top=textGrob(colnames(SNP_erap2_Xa)[i]))
+}
+
+```
+
+
+## same analysis for MARCH7
+```{r}
+gene_name <- "march7"
+gene_probe <- "ENSG00000136536.9"
+# Run this function across the loci in our genotype data
+all_binary <- cbind(Population_binary,Gender_binary)
+pval_ls_covar_pc <- rep(0,ncol(xa_mat))
+pval_ls <- rep(0,ncol(xa_mat))
+for(i in 1:ncol(xa_mat)){
+  pval_ls_covar_pc[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i],pc_df)
+  pval_ls[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i])
+}
+
+### Produce a QQ plot for p-values of SNPs on gene march7
+observed_pvals_covar_pc = sort(unlist(pval_ls_covar_pc))
+expected_pvals = qunif(seq(0, 1, length.out = length(pval_ls_covar_pc) + 2), min = 0, max = 1)  ## Generate expected values. Note that we are using length+2
+expected_pvals = expected_pvals[expected_pvals != 0 & expected_pvals != 1]  ## Remove the two extra values since they are 0 and 1
+df = data.frame(observed = -log10(observed_pvals_covar_pc), expected = -log10(expected_pvals)) 
+qq<- ggplot(df, aes(x = expected, y = observed)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  theme(legend.position = c(0.2,0.8))+
+  labs(x = '-log10 Expected p-val',
+       y = '-log10 Observed p-val',
+       title = paste('GWAS QQ plot on gene ', gene_name, ' with and without covars',sep=""))
+
+### Produce a Manhattan plot for gene ENSG00000164308.12 and Report significant SNPs
+# Make a simple manhattan plot
+plot_df <- data.frame(index = 1:length(pval_ls_covar_pc), pval = unlist(pval_ls_covar_pc), SNPname = colnames(xa_mat))
+man <- ggplot(plot_df, aes(index, -log10(pval))) + geom_point() + ggtitle(paste("Manhattan plot for gene ", gene_name,sep = "")) + geom_hline(yintercept=-log10(0.05 /length(pval_ls_covar_pc)), color = "red")
+
+png(paste("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/QQ_Manh_",gene_name,".png",sep = ""),width = 800, height = 300)
+grid.arrange(qq,man,ncol=2)
+dev.off()
+
+
+### Report significant SNPs
+alpha = 0.05
+alpha_b = alpha / length(pval_ls_covar_pc)
+pass_bfr = plot_df[which(plot_df$pval<alpha_b),]
+pass_bfr[,"SNPname"]
+print(paste("the number of SNPs that find to be significant correlated with the target gene when controlling the study-wide type 1 error of 0.05 using a Bonferroni correction is ",nrow(pass_bfr) )) 
+
+### match significant SNP location (with ENSG00000164308.12) information and report
+
+sig_snp_info_march7 <- merge(pass_bfr,SNP_info,by.x = "SNPname", by.y = "id", all.x = TRUE)
+sig_snp_info_gene_march7  <- sig_snp_info_march7[which(sig_snp_info_march7$position>=gene_info[which(gene_info$probe==gene_probe),"start"] & sig_snp_info_march7$position<=gene_info[which(gene_info$probe==gene_probe),"end"]),]
+nrow(sig_snp_info_gene_march7)
+rm(pval_ls_covar_pc)
+```
+
+
+## same analysis for FAHD1
+```{r}
+gene_name <- "fahd1"
+gene_probe <- "ENSG00000180185.7"
+# Run this function across the loci in our genotype data
+all_binary <- cbind(Population_binary,Gender_binary)
+pval_ls_covar_pc <- rep(0,ncol(xa_mat))
+pval_ls <- rep(0,ncol(xa_mat))
+for(i in 1:ncol(xa_mat)){
+  pval_ls_covar_pc[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i],pc_df)
+  #pval_ls[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i])
+}
+
+### Produce a QQ plot for p-values of SNPs on gene erap2
+
+### Produce a QQ plot for p-values of SNPs on gene march7
+observed_pvals_covar_pc = sort(unlist(pval_ls_covar_pc))
+expected_pvals = qunif(seq(0, 1, length.out = length(pval_ls_covar_pc) + 2), min = 0, max = 1)  ## Generate expected values. Note that we are using length+2
+expected_pvals = expected_pvals[expected_pvals != 0 & expected_pvals != 1]  ## Remove the two extra values since they are 0 and 1
+df = data.frame(observed = -log10(observed_pvals_covar_pc), expected = -log10(expected_pvals)) 
+qq<- ggplot(df, aes(x = expected, y = observed)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  theme(legend.position = c(0.2,0.8))+
+  labs(x = '-log10 Expected p-val',
+       y = '-log10 Observed p-val',
+       title = paste('GWAS QQ plot on gene ', gene_name, ' with and without covars',sep=""))
+
+### Produce a Manhattan plot for gene ENSG00000164308.12 and Report significant SNPs
+# Make a simple manhattan plot
+plot_df <- data.frame(index = 1:length(pval_ls_covar_pc), pval = unlist(pval_ls_covar_pc), SNPname = colnames(xa_mat))
+man <- ggplot(plot_df, aes(index, -log10(pval))) + geom_point() + ggtitle(paste("Manhattan plot for gene ", gene_name,sep = "")) + geom_hline(yintercept=-log10(0.05 /length(pval_ls_covar_pc)), color = "red")
+
+png(paste("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/QQ_Manh_",gene_name,".png",sep = ""),width = 800, height = 300)
+grid.arrange(qq,man,ncol=2)
+dev.off()
+
+
+
+
+### Report significant SNPs
+alpha = 0.05
+alpha_b = alpha / length(pval_ls_covar_pc)
+pass_bfr = plot_df[which(plot_df$pval<alpha_b),]
+pass_bfr[,"SNPname"]
+print(paste("the number of SNPs that find to be significant correlated with the target gene when controlling the study-wide type 1 error of 0.05 using a Bonferroni correction is ",nrow(pass_bfr) )) 
+### match significant SNP location (with ENSG00000164308.12) information and report
+
+sig_snp_info_fahd1 <- merge(pass_bfr,SNP_info,by.x = "SNPname", by.y = "id", all.x = TRUE)
+sig_snp_info_gene_fahd1  <- sig_snp_info_fahd1[which(sig_snp_info_fahd1$position>=gene_info[which(gene_info$probe==gene_probe),"start"] & sig_snp_info_fahd1$position<=gene_info[which(gene_info$probe==gene_probe),"end"]),]
+nrow(sig_snp_info_gene_fahd1)
+rm(pval_ls_covar_pc)
+```
+
+
+```{r}
+library(ggpubr)
+fahd1_pheno <- pheno[,"ENSG00000180185.7"]
+
+SNP_fahd1_Xa <- as.data.frame(xa_mat[,"rs12926045"])
+SNP_fahd1_Xd <- as.data.frame(xd_mat[,"rs12926045"])
+
+for (i in 1:ncol(SNP_fahd1_Xa)) {
+  test <- data.frame(fahd1_pheno, SNP_fahd1_Xa[i],SNP_fahd1_Xd[i])
+colnames(test) <- c("pheno","Xa","Xd")
+test[,2] <- as.factor(test[,2] )
+test[,3] <- as.factor(test[,3] )
+my_comparisons <- list( c("-1","1"),c("0","1"), c("0","-1"))
+plot_xa <- ggplot(test, aes(y=fahd1_pheno, x=Xa)) + 
+  stat_compare_means(comparisons = my_comparisons) + 
+  xlab(NULL) +
+    geom_boxplot()
+
+my_comparisons <- list( c("-1","1"))
+plot_xd <- ggplot(test, aes(y=fahd1_pheno, x=Xd)) + 
+  stat_compare_means(comparisons = my_comparisons) + 
+  xlab(NULL) +
+    geom_boxplot()
+
+grid.arrange(plot_xa,plot_xd,ncol=2, top=textGrob(colnames(SNP_fahd1_Xa)[i]))
+}
+
+```
+
+## same analysis for PEX6
+```{r}
+gene_name <- "pex6"
+gene_probe <- "ENSG00000124587.9"
+# Run this function across the loci in our genotype data
+all_binary <- cbind(Population_binary,Gender_binary)
+pval_ls_covar_pc <- rep(0,ncol(xa_mat))
+pval_ls <- rep(0,ncol(xa_mat))
+for(i in 1:ncol(xa_mat)){
+  pval_ls_covar_pc[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i],pc_df)
+  #pval_ls[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i])
+}
+
+### Produce a QQ plot for p-values of SNPs on gene erap2
+
+observed_pvals_covar_pc = sort(unlist(pval_ls_covar_pc))
+expected_pvals = qunif(seq(0, 1, length.out = length(observed_pvals_covar_pc) + 2), min = 0, max = 1)  ## Generate expected values. Note that we are using length+2
+expected_pvals = expected_pvals[expected_pvals != 0 & expected_pvals != 1]  ## Remove the two extra values since they are 0 and 1
+df = data.frame(observed = -log10(observed_pvals_covar_pc), expected = -log10(expected_pvals)) 
+qq<- ggplot(df, aes(x = expected, y = observed)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  theme(legend.position = c(0.2,0.8))+
+  labs(x = '-log10 Expected p-val',
+       y = '-log10 Observed p-val',
+       title = paste('GWAS QQ plot on gene ', gene_name, ' with and without covars',sep=""))
+
+### Produce a Manhattan plot for gene ENSG00000164308.12 and Report significant SNPs
+# Make a simple manhattan plot
+plot_df <- data.frame(index = 1:length(pval_ls_covar_pc), pval = unlist(pval_ls_covar_pc), SNPname = colnames(xa_mat))
+man <- ggplot(plot_df, aes(index, -log10(pval))) + geom_point() + ggtitle(paste("Manhattan plot for gene ", gene_name,sep = "")) + geom_hline(yintercept=-log10(0.05 /length(pval_ls_covar_pc)), color = "red")
+
+png(paste("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/QQ_Manh_",gene_name,".png",sep = ""),width = 800, height = 300)
+grid.arrange(qq,man,ncol=2)
+dev.off()
+
+### Report significant SNPs
+alpha = 0.05
+alpha_b = alpha / length(pval_ls_covar_pc)
+pass_bfr = plot_df[which(plot_df$pval<alpha_b),]
+pass_bfr[,"SNPname"]
+print(paste("the number of SNPs that find to be significant correlated with the target gene when controlling the study-wide type 1 error of 0.05 using a Bonferroni correction is ",nrow(pass_bfr) )) 
+
+### match significant SNP location (with ENSG00000164308.12) information and report
+
+sig_snp_info_pex6 <- merge(pass_bfr,SNP_info,by.x = "SNPname", by.y = "id", all.x = TRUE)
+sig_snp_info_gene_pex6  <- sig_snp_info_pex6[which(sig_snp_info_pex6$position>=gene_info[which(gene_info$probe==gene_probe),"start"] & sig_snp_info_pex6$position<=gene_info[which(gene_info$probe==gene_probe),"end"]),]
+nrow(sig_snp_info_gene_pex6)
+rm(pval_ls_covar_pc)
+```
+### pex6 - further analysis on the impact of SNPs to the phenotype
+For each identified SNPs, how  the expression level of minor allel different from the mojor allel?
+```{r}
+library(ggpubr)
+pex6_pheno <- pheno[,"ENSG00000124587.9"]
+
+SNP_pex6_Xa <- as.data.frame(xa_mat[,pass_bfr[,"SNPname"]])
+SNP_pex6_Xd <- as.data.frame(xd_mat[,pass_bfr[,"SNPname"]])
+
+for (i in 1:ncol(SNP_pex6_Xa)) {
+  test <- data.frame(pex6_pheno, SNP_pex6_Xa[i],SNP_pex6_Xd[i])
+colnames(test) <- c("pheno","Xa","Xd")
+test[,2] <- as.factor(test[,2] )
+test[,3] <- as.factor(test[,3] )
+my_comparisons <- list( c("-1","1"),c("0","1"), c("0","-1"))
+plot_xa <- ggplot(test, aes(y=pex6_pheno, x=Xa)) + 
+  stat_compare_means(comparisons = my_comparisons) + 
+  xlab(NULL) +
+    geom_boxplot()
+
+my_comparisons <- list( c("-1","1"))
+plot_xd <- ggplot(test, aes(y=pex6_pheno, x=Xd)) + 
+  stat_compare_means(comparisons = my_comparisons) + 
+  xlab(NULL) +
+    geom_boxplot()
+
+grid.arrange(plot_xa,plot_xd,ncol=2, top=textGrob(colnames(SNP_pex6_Xa)[i]))
+}
+
+```
+## same analysis for GFM1
+```{r}
+gene_name <- "gfm1"
+gene_probe <- "ENSG00000168827.9"
+# Run this function across the loci in our genotype data
+all_binary <- cbind(Population_binary,Gender_binary)
+pval_ls_covar_pc <- rep(0,ncol(xa_mat))
+pval_ls <- rep(0,ncol(xa_mat))
+for(i in 1:ncol(xa_mat)){
+  pval_ls_covar_pc[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i],pc_df)
+  #pval_ls[i] = pval_calculator(as.matrix(pheno[,gene_probe]), xa_mat[,i], xd_mat[,i])
+}
+
+observed_pvals_covar_pc = sort(unlist(pval_ls_covar_pc))
+expected_pvals = qunif(seq(0, 1, length.out = length(observed_pvals_covar_pc) + 2), min = 0, max = 1)  ## Generate expected values. Note that we are using length+2
+expected_pvals = expected_pvals[expected_pvals != 0 & expected_pvals != 1]  ## Remove the two extra values since they are 0 and 1
+df = data.frame(observed = -log10(observed_pvals_covar_pc), expected = -log10(expected_pvals)) 
+qq<- ggplot(df, aes(x = expected, y = observed)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  theme(legend.position = c(0.2,0.8))+
+  labs(x = '-log10 Expected p-val',
+       y = '-log10 Observed p-val',
+       title = paste('GWAS QQ plot on gene ', gene_name, ' with and without covars',sep=""))
+
+### Produce a Manhattan plot for gene ENSG00000164308.12 and Report significant SNPs
+# Make a simple manhattan plot
+plot_df <- data.frame(index = 1:length(pval_ls_covar_pc), pval = unlist(pval_ls_covar_pc), SNPname = colnames(xa_mat))
+man <- ggplot(plot_df, aes(index, -log10(pval))) + geom_point() + ggtitle(paste("Manhattan plot for gene ", gene_name,sep = "")) + geom_hline(yintercept=-log10(0.05 /length(pval_ls_covar_pc)), color = "red")
+
+png(paste("/Users/a123/Library/CloudStorage/OneDrive-CornellUniversity/course/quantitative genomics and genetics/final_project/QQ_Manh_",gene_name,".png",sep = ""),width = 800, height = 300)
+grid.arrange(qq,man,ncol=2)
+dev.off()
+
+### Report significant SNPs
+alpha = 0.05
+alpha_b = alpha / length(pval_ls_covar_pc)
+pass_bfr = plot_df[which(plot_df$pval<alpha_b),]
+pass_bfr[,"SNPname"]
+print(paste("the number of SNPs that find to be significant correlated with the target gene when controlling the study-wide type 1 error of 0.05 using a Bonferroni correction is ",nrow(pass_bfr) )) 
+
+### match significant SNP location (with ENSG00000164308.12) information and report
+
+sig_snp_info <- merge(pass_bfr,SNP_info,by.x = "SNPname", by.y = "id", all.x = TRUE)
+sig_snp_info_gene  <- sig_snp_info[which(sig_snp_info$position>=gene_info[which(gene_info$probe==gene_probe),"start"] & sig_snp_info$position<=gene_info[which(gene_info$probe==gene_probe),"end"]),]
+nrow(sig_snp_info_gene)
+```
+
+
