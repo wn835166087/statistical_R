@@ -1,0 +1,89 @@
+---
+title: "equivalent test"
+output: html_notebook
+reference: "Liu JP, Hsueh HM, Hsieh E, Chen JJ. Tests for equivalence or non-inferiority for paired binary data. Stat Med. 2002 Jan 30;21(2):231-45. doi: 10.1002/sim.1012. PMID: 11782062."
+---
+
+# Contiuity corrected form of equivalence test, suitable for small sample size - sample based
+```{r}
+equl_test <-  function(x10,x01,n,Me){
+  print(paste('the number of samples tested as positive by the reference/gold standard method and tested as negative by the new method (false negative) is ',x10))
+  print(paste('the number of samples tested as negative by the reference/gold standard method and tested as positive by the new method is (false positive)',x01))
+  print(paste('the number of all tested samples is ', n))
+  print(paste('the equivalence limit is ', Me))
+  c <- x10 - x01
+  D <- x10/n - x01/n
+  var_D <- (x10/n + x01/n -D*D)/n
+  zl<- (c+n*Me-0.5)/((n^2)*var_D)^0.5
+  print(zl)
+  zu<- (c-n*Me+0.5)/((n^2)*var_D)^0.5
+  print(zu)
+  pval_l <- 1-pnorm(zl) #not abs value #1- pnorm(-abs(zl)) (right)
+  pval_u <- pnorm(zu)#not abs value 
+  #print(paste('the var_D (sample based) is ',var_D))
+  
+  print(paste('the lower p-value is ',pval_l))
+  
+  print(paste('the upper p-value is ',pval_u))
+  print(paste('the equavalence test p-value is ', max(pval_l,pval_u)))
+  print(paste('the non-inferiority test p-value is ', pval_l))
+  print(" ")
+  #print(paste('sum of the p-value is ', sum(pval_l,pval_u)))
+}
+```
+
+# Calculate the sample size that yields desired power - sample based
+```{r}
+equal_sample_size <-  function(Me,p01,alpha,beta,test_type){
+  print(paste('the equivalence limit is ', Me))
+  print(paste('the probability mples tested as negative by the reference/gold standard method and tested as positive by the new method is ',p01))
+  print(paste('the significant level is ', alpha))
+  print(paste('the desired power is ', 1-beta))
+  print(paste('the test_type (non-inferity(one-sided test) or equivalence(two one-sided test)) is ', test_type))
+    if (test_type=='non-inferiority'){
+    alpha <- alpha/2
+    half_beta <- beta
+  } else {
+    if (test_type=='equivalence'){
+      alpha <- alpha
+      half_beta <- beta/2
+    } else {print("illegal test_type. please use 'non-inferiority' or 'equivalence'")}
+  }
+
+  z_alpha <- qnorm(1 - alpha)
+  z_half_beta <- qnorm(1 - half_beta ) 
+  right <- 2*p01*(z_alpha + z_half_beta)^2
+  f1 <- function(x) { x*((Me-0.5*(1/x))^2)-right }
+  u1 <- uniroot(f1,c(1,1000),extendInt="yes", trace=1)
+  print(paste('the sample size that yields desired power is ', round(u1$root)))
+}
+```
+
+
+
+# Test results
+```{r}
+#toxic is MC>0.4
+
+#Gold Standard: ELISA
+#ELISA bIORAD
+equl_test(3,1,28,0.15)
+equl_test(3,1,28,0.1)
+equl_test(3,1,28,0.05)
+
+#Gold Standard: ELISA
+#ELISA- BiOMEME 20
+#12 true negative by elisa MC_mcyA_se_18[which(MC_mcyA_se_18$log10_MC<log10(4)),]
+#31 true positive
+equl_test(1,4,35,0.15) #take unquantifiable as negative
+equl_test(1,2,35,0.15) #take 0729_3469NBa &  0729_3469NBb as toxic samples
+
+
+
+#Gold Standard: ELISA, reference: BIORAD
+#elisa-biorad-biomeme
+equl_test(2,0,29,0.15)
+equl_test(2,0,29,0.1)
+
+```
+
