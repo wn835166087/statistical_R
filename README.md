@@ -3,7 +3,7 @@ My in-house statistical analysis scripts in R markdown
 
 ## Content
 ### equavalence_test
-Functions to conduct equavanlence test and estimating the proper sample size according to (Liu,et, al., 2002).
+Functions to conduct equavanlence test and estimating the proper sample size according to (Liu, et, al., 2002).
 ### GWAS
 GWAS analysis to identified Single Nucleotide Polymorphisms (SNPs) that are significantly correlated with the expression levels of five human disease related genes from lymphoblastoid cell lines. In the provided code, the potential covariates were identified. The SNPs that were potentially correlated with the disease related gene expression were identified.
 
